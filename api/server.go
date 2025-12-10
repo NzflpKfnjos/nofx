@@ -468,6 +468,18 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 	// Generate trader ID
 	traderID := fmt.Sprintf("%s_%s_%d", req.ExchangeID, req.AIModelID, time.Now().Unix())
 
+	// Resolve strategy ID: use user-provided, otherwise fall back to active/default strategy
+	strategyID := req.StrategyID
+	if strategyID == "" {
+		if strategy, err := s.store.Strategy().GetActive(userID); err == nil && strategy != nil {
+			strategyID = strategy.ID
+			logger.Infof("📋 No strategy_id provided, using active/default strategy: %s", strategyID)
+		} else {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "No strategy configured. Please create a strategy first in Strategy Studio."})
+			return
+		}
+	}
+
 	// Set default values
 	isCrossMargin := true // Default to cross margin mode
 	if req.IsCrossMargin != nil {
@@ -585,7 +597,7 @@ func (s *Server) handleCreateTrader(c *gin.Context) {
 		Name:                 req.Name,
 		AIModelID:            req.AIModelID,
 		ExchangeID:           req.ExchangeID,
-		StrategyID:           req.StrategyID, // Associated strategy ID (new version)
+		StrategyID:           strategyID, // Associated strategy ID (new version; defaulted if empty)
 		InitialBalance:       actualBalance,  // Use actual queried balance
 		BTCETHLeverage:       btcEthLeverage,
 		AltcoinLeverage:      altcoinLeverage,

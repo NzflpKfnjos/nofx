@@ -583,23 +583,52 @@ func (tm *TraderManager) addTraderFromStore(traderCfg *store.Trader, aiModelCfg 
 		return fmt.Errorf("trader ID '%s' already exists", traderCfg.ID)
 	}
 
-	// Load strategy config (must have strategy)
-	var strategyConfig *store.StrategyConfig
+
+	// Load strategy config (must have strategy). If missing, fall back to active/default strategy.
+	var (
+		strategyConfig *store.StrategyConfig
+		strategy       *store.Strategy
+		err            error
+		usedFallback   bool
+	)
+
 	if traderCfg.StrategyID != "" {
-		strategy, err := st.Strategy().Get(traderCfg.UserID, traderCfg.StrategyID)
+		strategy, err = st.Strategy().Get(traderCfg.UserID, traderCfg.StrategyID)
 		if err != nil {
-			return fmt.Errorf("failed to load strategy %s for trader %s: %w", traderCfg.StrategyID, traderCfg.Name, err)
+			logger.Infof("Strategy %s for trader %s not found, trying active/default strategy", traderCfg.StrategyID, traderCfg.Name)
+			strategy = nil
 		}
-		// Parse JSON config
-		strategyConfig, err = strategy.ParseConfig()
-		if err != nil {
-			return fmt.Errorf("failed to parse strategy config for trader %s: %w", traderCfg.Name, err)
-		}
-		logger.Infof("✓ Trader %s loaded strategy config: %s", traderCfg.Name, strategy.Name)
-	} else {
-		return fmt.Errorf("trader %s has no strategy configured", traderCfg.Name)
 	}
 
+	if strategy == nil {
+		strategy, err = st.Strategy().GetActive(traderCfg.UserID)
+		if err != nil {
+			return fmt.Errorf("trader %s has no strategy configured and no active/default strategy available: %w", traderCfg.Name, err)
+		}
+		logger.Infof("Trader %s using fallback strategy: %s", traderCfg.Name, strategy.Name)
+		usedFallback = true
+	}
+
+	strategyConfig, err = strategy.ParseConfig()
+	if err != nil {
+		return fmt.Errorf("failed to parse strategy config for trader %s: %w", traderCfg.Name, err)
+	}
+	logger.Infof("Trader %s loaded strategy config: %s", traderCfg.Name, strategy.Name)
+
+	// Persist fallback strategy ID for traders that had none
+	if usedFallback && traderCfg.StrategyID == "" {
+		traderCfg.StrategyID = strategy.ID
+		_ = st.Trader().Update(&store.Trader{
+			ID:                  traderCfg.ID,
+			UserID:              traderCfg.UserID,
+			Name:                traderCfg.Name,
+			AIModelID:           traderCfg.AIModelID,
+			ExchangeID:          traderCfg.ExchangeID,
+			StrategyID:          traderCfg.StrategyID,
+			ScanIntervalMinutes: traderCfg.ScanIntervalMinutes,
+			IsCrossMargin:       traderCfg.IsCrossMargin,
+		})
+	}
 	// Build AutoTraderConfig (coinPoolURL/oiTopURL obtained from strategy config, used in StrategyEngine)
 	traderConfig := trader.AutoTraderConfig{
 		ID:                    traderCfg.ID,

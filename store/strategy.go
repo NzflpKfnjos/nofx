@@ -182,7 +182,54 @@ func (s *StrategyStore) initTables() error {
 }
 
 func (s *StrategyStore) initDefaultData() error {
-	// No longer pre-populate strategies - create on demand when user configures
+	// Ensure a system default strategy exists so new installations can run without manual seeding
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM strategies WHERE is_default = 1`).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+
+	defaultConfig := GetDefaultStrategyConfig("en")
+	configBytes, err := json.Marshal(defaultConfig)
+	if err != nil {
+		return fmt.Errorf("failed to serialize default strategy config: %w", err)
+	}
+
+	_, err = s.db.Exec(`
+		INSERT INTO strategies (id, user_id, name, description, is_active, is_default, config)
+		VALUES (?, '', ?, ?, 0, 1, ?)
+	`, "default_strategy", "Default Strategy", "System generated default strategy", string(configBytes))
+	if err != nil {
+		return fmt.Errorf("failed to create system default strategy: %w", err)
+	}
+	return nil
+}
+
+// ensureDefaultStrategyExists creates a default strategy record if none exists (for already-initialized DBs).
+func (s *StrategyStore) ensureDefaultStrategyExists() error {
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM strategies WHERE is_default = 1`).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+
+	defaultConfig := GetDefaultStrategyConfig("en")
+	configBytes, err := json.Marshal(defaultConfig)
+	if err != nil {
+		return fmt.Errorf("failed to serialize default strategy config: %w", err)
+	}
+
+	_, err = s.db.Exec(`
+		INSERT INTO strategies (id, user_id, name, description, is_active, is_default, config)
+		VALUES (?, '', ?, ?, 0, 1, ?)
+	`, "default_strategy", "Default Strategy", "System generated default strategy", string(configBytes))
+	if err != nil {
+		return fmt.Errorf("failed to create system default strategy: %w", err)
+	}
 	return nil
 }
 
@@ -380,7 +427,10 @@ func (s *StrategyStore) GetActive(userID string) (*Strategy, error) {
 		&createdAt, &updatedAt,
 	)
 	if err == sql.ErrNoRows {
-		// no active strategy, return system default strategy
+		// no active strategy, ensure default exists then return system default strategy
+		if err := s.ensureDefaultStrategyExists(); err != nil {
+			return nil, err
+		}
 		return s.GetDefault()
 	}
 	if err != nil {
@@ -393,6 +443,11 @@ func (s *StrategyStore) GetActive(userID string) (*Strategy, error) {
 
 // GetDefault get system default strategy
 func (s *StrategyStore) GetDefault() (*Strategy, error) {
+	// Ensure a default exists even for old databases
+	if err := s.ensureDefaultStrategyExists(); err != nil {
+		return nil, err
+	}
+
 	var st Strategy
 	var createdAt, updatedAt string
 	err := s.db.QueryRow(`
